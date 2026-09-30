@@ -12,6 +12,7 @@ const runGit = async (
   const result = await runCommand("git", args, {
     cwd: workspace.dir,
     env: workspace.env,
+    signal: workspace.signal,
   });
 
   if (result.exitCode !== 0) {

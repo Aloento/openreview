@@ -7,7 +7,11 @@ export const commitAndPush = async (
   message: string,
   branchName?: string
 ): Promise<void> => {
-  const options = { cwd: workspace.dir, env: workspace.env };
+  const options = {
+    cwd: workspace.dir,
+    env: workspace.env,
+    signal: workspace.signal,
+  };
 
   try {
     await runCommand("git", ["add", "-A"], options);

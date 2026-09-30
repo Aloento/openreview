@@ -96,10 +96,16 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/opt/openreview
-ExecStart=/usr/bin/node /opt/openreview/dist/server.js
-EnvironmentFile=/opt/openreview/.env
+ExecStart=/usr/bin/node --env-file=/opt/openreview/.env /opt/openreview/dist/server.js
 Restart=always
 RestartSec=5
+
+# Reviews install dependencies and run project tooling on the host. Cap the
+# cgroup so a runaway command cannot starve the machine.
+CPUQuota=150%
+MemoryHigh=600M
+MemoryMax=800M
+TasksMax=256
 
 [Install]
 WantedBy=multi-user.target
@@ -130,6 +136,8 @@ Webhook URL: `https://<your-host>/webhook`, content type `application/json`.
 - Each run gets its own temporary directory with mode `0700`, removed when the review
   finishes. Stale directories are cleaned up on startup.
 - Reviews are serialised — one workspace and one agent run at a time.
+- Every command runs in its own process group and is killed with that group when it
+  exceeds `BASH_TIMEOUT_MS`, or when the run as a whole exceeds `RUN_TIMEOUT_MS`.
 - The installation token is passed through the environment of the commands that need it
   and is also kept in the workspace git remote, which is why the workspace stays private
   and is deleted after the run.

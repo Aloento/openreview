@@ -14,6 +14,12 @@ export interface Workspace {
    */
   env: Record<string, string>;
   id: string;
+  /**
+   * Aborts every command started in this workspace. Commands run in their own
+   * process group, so aborting kills the whole tree instead of leaving
+   * grandchildren (npm, go, test runners) behind.
+   */
+  signal?: AbortSignal;
 }
 
 export interface CommandResult {
@@ -25,6 +31,7 @@ export interface CommandResult {
 interface RunOptions {
   cwd?: string;
   env?: Record<string, string>;
+  signal?: AbortSignal;
   timeoutMs?: number;
 }
 
@@ -51,6 +58,8 @@ export const runCommand = (
   new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
+      // Own process group, so a timeout can kill everything the command starts.
+      detached: true,
       env: { ...process.env, ...options.env },
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
@@ -60,9 +69,21 @@ export const runCommand = (
     let stderr = "";
     let settled = false;
 
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-    }, options.timeoutMs ?? env.BASH_TIMEOUT_MS);
+    const killTree = (): void => {
+      if (child.pid === undefined) {
+        return;
+      }
+
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+
+    const timer = setTimeout(killTree, options.timeoutMs ?? env.BASH_TIMEOUT_MS);
+
+    options.signal?.addEventListener("abort", killTree, { once: true });
 
     const finish = (result: CommandResult): void => {
       if (settled) {
@@ -71,6 +92,7 @@ export const runCommand = (
 
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", killTree);
       resolvePromise(result);
     };
 
@@ -88,6 +110,7 @@ export const runCommand = (
 
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", killTree);
       rejectPromise(error);
     });
 
@@ -103,12 +126,13 @@ export const runCommand = (
 export const runBash = (
   workspace: Workspace,
   command: string,
-  options: Omit<RunOptions, "cwd" | "env"> = {}
+  options: Omit<RunOptions, "cwd" | "env" | "signal"> = {}
 ): Promise<CommandResult> =>
   runCommand("bash", ["-c", command], {
     ...options,
     cwd: workspace.dir,
     env: workspace.env,
+    signal: workspace.signal,
   });
 
 /**
@@ -118,7 +142,8 @@ export const runBash = (
 export const createWorkspace = async (
   repoFullName: string,
   token: string,
-  branch: string
+  branch: string,
+  signal?: AbortSignal
 ): Promise<Workspace> => {
   const root = await getRootDir();
   const dir = await mkdtemp(join(root, "run-"));
@@ -138,7 +163,7 @@ export const createWorkspace = async (
         remote,
         ".",
       ],
-      { cwd: dir, timeoutMs: env.RUN_TIMEOUT_MS }
+      { cwd: dir, signal, timeoutMs: env.RUN_TIMEOUT_MS }
     );
 
     if (clone.exitCode !== 0) {
@@ -154,7 +179,12 @@ export const createWorkspace = async (
     });
   }
 
-  return { dir, env: { GH_TOKEN: token, GITHUB_TOKEN: token }, id: dir };
+  return {
+    dir,
+    env: { GH_TOKEN: token, GITHUB_TOKEN: token },
+    id: dir,
+    signal,
+  };
 };
 
 export const removeWorkspace = async (dir: string): Promise<void> => {

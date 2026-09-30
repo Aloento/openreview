@@ -20,9 +20,17 @@ export const createBashTool = (workspace: Workspace) =>
       "  cat <file>          # View file contents",
     ].join("\n"),
     execute: async ({ command }) => {
+      const startedAt = Date.now();
+
+      console.log(`[agent] bash: ${command.slice(0, 200)}`);
+
       const result = await runBash(workspace, command, {
         timeoutMs: env.BASH_TIMEOUT_MS,
       });
+
+      console.log(
+        `[agent] bash exit ${result.exitCode} in ${Math.round((Date.now() - startedAt) / 1000)}s`
+      );
 
       return {
         exitCode: result.exitCode,

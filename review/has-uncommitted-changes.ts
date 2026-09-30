@@ -8,6 +8,7 @@ export const hasUncommittedChanges = async (
   const result = await runCommand("git", ["status", "--porcelain"], {
     cwd: workspace.dir,
     env: workspace.env,
+    signal: workspace.signal,
   }).catch((error: unknown) => {
     throw new Error(
       `[hasUncommittedChanges] Failed to check git status: ${parseError(error)}`

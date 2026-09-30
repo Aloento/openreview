@@ -64,7 +64,24 @@ Please ensure the OpenReview app has access to this repository and branch.${FOOT
   }
 
   const token = await getGitHubToken();
-  const workspace = await createWorkspace(repoFullName, token, prBranch);
+
+  // One signal bounds the whole run: the agent stops and every command it
+  // started is killed, including anything those commands spawned.
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new Error("review timed out")),
+    env.RUN_TIMEOUT_MS
+  );
+
+  const workspace = await createWorkspace(
+    repoFullName,
+    token,
+    prBranch,
+    controller.signal
+  ).catch(async (error: unknown) => {
+    clearTimeout(timeout);
+    throw error;
+  });
 
   try {
     await installDependencies(workspace);
@@ -76,7 +93,7 @@ Please ensure the OpenReview app has access to this repository and branch.${FOOT
       threadId,
       prNumber,
       repoFullName,
-      AbortSignal.timeout(env.RUN_TIMEOUT_MS)
+      controller.signal
     );
 
     if (!agentResult.success) {
@@ -113,6 +130,7 @@ ${parseError(error)}
 
     throw error;
   } finally {
+    clearTimeout(timeout);
     await removeWorkspace(workspace.dir);
   }
 };
