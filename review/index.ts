@@ -4,14 +4,16 @@ import type { Workspace } from "@/lib/workspace";
 import { createWorkspace, removeWorkspace } from "@/lib/workspace";
 
 import { addPRComment } from "./add-pr-comment";
-import { approvePullRequest } from "./approve-pr";
 import { checkPushAccess } from "./check-push-access";
 import { commitAndPush } from "./commit-and-push";
 import { configureGit } from "./configure-git";
+import { buildReviewBody, createReviewContext } from "./context";
 import { getGitHubToken } from "./get-github-token";
 import { hasUncommittedChanges } from "./has-uncommitted-changes";
 import { installDependencies } from "./install-dependencies";
 import { runAgent } from "./run-agent";
+import { submitReview } from "./submit-review";
+import type { ReviewDecision } from "./submit-review";
 
 export interface ThreadMessage {
   content: string;
@@ -28,13 +30,11 @@ export interface ReviewParams {
   trigger: "auto" | "mention";
 }
 
-export const AUTO_REVIEW_INSTRUCTION = `Review the changes in this pull request and report what you find. Group findings by severity: critical, warning, suggestion.
+export const AUTO_REVIEW_INSTRUCTION = `Review the changes in this pull request and write your findings with the reply tool. Group them by severity: critical, warning, suggestion.
 
-If you find a critical problem that must be fixed before this change can be merged, submit a change request with \`gh pr review --request-changes --body "..."\` explaining why. Warnings and suggestions are reported in your reply only.
+If a critical problem must be fixed before this change can be merged, also call requestChanges with the reason. Warnings and suggestions only go in the review.
 
-Work from the diff and the files in the workspace. Do not install toolchains and do not run repository-wide builds or tests.
-
-Always post your findings with the reply tool. Do not approve the pull request.`;
+Work from the diff and the files in the workspace. Do not install toolchains and do not run repository-wide builds or tests.`;
 
 const runReview = async (params: ReviewParams): Promise<void> => {
   const {
@@ -63,8 +63,9 @@ Please ensure the OpenReview app has access to this repository and branch.`
 
   const token = await getGitHubToken();
 
-  // Only change requests submitted after this point belong to this run.
+  // Only verdicts produced after this point belong to this run.
   const runStartedAt = new Date();
+  const context = createReviewContext();
 
   // One signal bounds the whole run: the agent stops and every command it
   // started is killed, including anything those commands spawned.
@@ -89,8 +90,8 @@ Please ensure the OpenReview app has access to this repository and branch.`
 
     const agentResult = await runAgent(
       workspace,
+      context,
       messages,
-      threadId,
       prNumber,
       repoFullName,
       controller.signal
@@ -106,15 +107,29 @@ Please ensure the OpenReview app has access to this repository and branch.`
       await commitAndPush(workspace, "openreview: apply changes", prBranch);
     }
 
-    if (env.AUTO_APPROVE) {
-      const approval = await approvePullRequest(
-        repoFullName,
-        prNumber,
-        runStartedAt
-      );
-      console.log(
-        `[review] auto approve for ${repoFullName}#${prNumber}: ${approval.approved ? "approved" : "skipped"} (${approval.reason})`
-      );
+    const body = buildReviewBody(context);
+    const decision: ReviewDecision = context.requestChanges
+      ? "request_changes"
+      : env.AUTO_APPROVE
+        ? "approve"
+        : "comment";
+
+    const result = await submitReview(
+      repoFullName,
+      prNumber,
+      decision,
+      body,
+      runStartedAt
+    );
+
+    console.log(
+      `[review] ${result.submitted ? "submitted" : "skipped"} review for ${repoFullName}#${prNumber}: ${result.reason}`
+    );
+
+    // The review is the only output channel, so findings that could not be
+    // submitted as one are posted as a comment instead of being dropped.
+    if (!(result.submitted || body.length === 0)) {
+      await addPRComment(threadId, body);
     }
   } catch (error) {
     try {

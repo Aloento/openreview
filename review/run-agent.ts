@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { createAgent } from "@/lib/agent";
 import { parseError } from "@/lib/error";
 import type { Workspace } from "@/lib/workspace";
+import type { ReviewContext } from "@/review/context";
 
 import { discoverSkills } from "./discover-skills";
 import type { ThreadMessage } from "./index";
@@ -14,8 +15,8 @@ export interface AgentResult {
 
 export const runAgent = async (
   workspace: Workspace,
+  context: ReviewContext,
   threadMessages: ThreadMessage[],
-  threadId: string,
   prNumber: number,
   repoFullName: string,
   signal?: AbortSignal
@@ -27,7 +28,7 @@ export const runAgent = async (
 
     const agent = createAgent(
       workspace,
-      threadId,
+      context,
       prNumber,
       repoFullName,
       skills

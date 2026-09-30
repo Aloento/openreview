@@ -21,11 +21,14 @@ sequenceDiagram
     GH->>SVC: webhook: pull_request opened, issue_comment mention
     SVC->>GH: clone the pull request branch into a workspace
     SVC->>LLM: run the review agent with the repo checked out
-    LLM-->>SVC: tool calls: gh, bash, readFile, writeFile, reply
-    SVC->>GH: comments, inline suggestions, change requests
+    LLM-->>SVC: tool calls: gh, bash, readFile, writeFile, reply, requestChanges
+    SVC->>GH: one review: the findings, approved or requesting changes
     SVC->>GH: commit and push fixes (when the agent made changes)
-    SVC->>GH: approve when no review requested changes
 ```
+
+The agent writes with the `reply` tool and the pipeline submits exactly one review
+carrying that text, so a pull request never gets both a comment and a review for the
+same run.
 
 Triggers:
 
@@ -47,11 +50,15 @@ Authorisation, because every review costs tokens:
 
 Approval rules:
 
-- The agent submits a change request (`gh pr review --request-changes`) when it finds a
-  critical problem. Pull requests with such a review on the current head commit are
-  never approved automatically.
-- Otherwise the pull request is approved. Drafts and closed pull requests are skipped.
-- Set `AUTO_APPROVE=false` to turn the approval off.
+- The agent calls `requestChanges` when it finds a critical problem, and the review is
+  then submitted as a change request.
+- Otherwise the review is submitted as an approval (`AUTO_APPROVE=true`, the default) or
+  as a plain comment (`AUTO_APPROVE=false`).
+- Drafts and closed pull requests are skipped; in that case the findings are posted as a
+  comment so nothing is lost.
+- A pull request that is already approved is not approved twice. A change request made
+  during the same run is never followed by an approval, while a change request from an
+  earlier run does not block the next review from approving.
 
 ## Local development
 
@@ -162,8 +169,8 @@ Webhook URL: `https://<your-host>/webhook`, content type `application/json`.
 - The agent is an AI SDK `ToolLoopAgent` against an OpenAI-compatible endpoint instead of
   a Claude model through the AI Gateway.
 - `pull_request` events are handled directly in `lib/bot.ts`, since the GitHub chat
-  adapter only receives comments, and `review/approve-pr.ts` implements the automatic
-  approval.
+  adapter only receives comments, and `review/submit-review.ts` submits the single
+  review with the verdict.
 - Skills are read from `.agents/skills` next to the service, as upstream does.
 
 ## Known limitations

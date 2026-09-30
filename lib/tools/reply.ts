@@ -1,18 +1,21 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import { addPRComment } from "@/review/add-pr-comment";
+import type { ReviewContext } from "@/review/context";
 
-export const createReplyTool = (threadId: string) =>
+export const createReplyTool = (context: ReviewContext) =>
   tool({
     description:
-      "Post a comment on the pull request. Use this to share your findings, ask questions, or report results.",
-    execute: async ({ body }) => {
-      await addPRComment(threadId, body);
+      "Write your review for the pull request. The text is published as a single review, so write it as the review you would leave: findings, severity and concrete fixes. Call it at least once.",
+    execute: ({ body }) => {
+      context.replies.push(body);
 
-      return { success: true };
+      return {
+        note: "Recorded. It is submitted as the review when the run ends.",
+        success: true,
+      };
     },
     inputSchema: z.object({
-      body: z.string().describe("The markdown-formatted comment body to post"),
+      body: z.string().describe("The markdown-formatted review body"),
     }),
   });

@@ -9,8 +9,10 @@ import { createBashTool } from "@/lib/tools/bash";
 import { createLoadSkillTool } from "@/lib/tools/load-skill";
 import { createReadFileTool } from "@/lib/tools/read-file";
 import { createReplyTool } from "@/lib/tools/reply";
+import { createRequestChangesTool } from "@/lib/tools/request-changes";
 import { createWriteFileTool } from "@/lib/tools/write-file";
 import type { Workspace } from "@/lib/workspace";
+import type { ReviewContext } from "@/review/context";
 
 const MAX_TOOL_RESULT_CHARS = 10_000;
 const MAX_TOTAL_TOKENS = 200_000;
@@ -44,10 +46,9 @@ Based on the user's request, decide what to do. Your capabilities include:
 - Don't nitpick style or formatting
 
 ## Severity
-- **critical** — correctness bugs, security holes, data loss, broken builds: request changes
-- **warning** — fragile or clearly wrong code that still works today: report it, do not request changes
-- **suggestion** — improvements and open questions: report them, do not request changes
-- Do not approve the pull request yourself. Approval is decided outside this run: it is granted when no review requests changes, and skipped when you requested changes.
+- **critical** — correctness bugs, security holes, data loss, broken builds: call \`requestChanges\`
+- **warning** — fragile or clearly wrong code that still works today: report it in your review
+- **suggestion** — improvements and open questions: report them in your review
 
 ## Environment Limits
 - The workspace runs on a small, shared host. Never install toolchains or package managers (Go, Node, Rust, Python, ...), never download release archives, and never run repository-wide builds or test suites that pull large dependency trees.
@@ -68,10 +69,12 @@ Based on the user's request, decide what to do. Your capabilities include:
 - After making changes, verify they work by running relevant commands
 
 ## Replying
-- Use the reply tool to post your response to the pull request
-- Always reply at least once with your findings or actions taken
-- Format replies as markdown
-- Be concise and actionable
+- Use the reply tool to write your review. It is published as one review on the pull request, so write it as a single self-contained report: findings, severity and concrete fixes.
+- Call it at least once. Several calls are concatenated into the same review.
+- Do not submit a review with \`gh pr review\` and do not post top-level comments with \`gh pr comment\`; the pipeline submits the review for you.
+- When the change must not be merged, call requestChanges with the reason. The review is then submitted as a change request instead of a comment.
+- Inline comments on specific lines are still allowed when a finding really belongs to a line.
+- Be concise and actionable.
 
 ## Getting Started
 - Start by running \`gh pr diff {{PR_NUMBER}}\` to see what changed in this PR`;
@@ -115,7 +118,7 @@ const trimToolResults = (messages: ModelMessage[]): ModelMessage[] =>
 
 export const createAgent = (
   workspace: Workspace,
-  threadId: string,
+  context: ReviewContext,
   prNumber: number,
   repoFullName: string,
   skills: SkillMetadata[]
@@ -158,7 +161,8 @@ export const createAgent = (
       bash: createBashTool(workspace),
       loadSkill: createLoadSkillTool(skills),
       readFile: createReadFileTool(workspace),
-      reply: createReplyTool(threadId),
+      reply: createReplyTool(context),
+      requestChanges: createRequestChangesTool(context),
       writeFile: createWriteFileTool(workspace),
     } satisfies ToolSet,
   });
