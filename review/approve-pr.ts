@@ -8,12 +8,15 @@ export interface ApprovalResult {
 /**
  * Approves the pull request when the review agent did not request changes.
  *
- * Only reviews submitted by this app against the current head commit count, so
- * a change request raised for an older revision no longer blocks approval.
+ * The decision is per run, not per commit: GitHub moves the commit a review
+ * points at forward when the branch gets new commits, so an earlier change
+ * request cannot be recognised by comparing commits. A change request raised
+ * during this run blocks the approval, and a previous approval is not repeated.
  */
 export const approvePullRequest = async (
   repoFullName: string,
-  prNumber: number
+  prNumber: number,
+  runStartedAt: Date
 ): Promise<ApprovalResult> => {
   const [owner, repo] = repoFullName.split("/");
   const octokit = await getInstallationOctokit();
@@ -34,8 +37,6 @@ export const approvePullRequest = async (
     return { approved: false, reason: "Pull request is a draft" };
   }
 
-  const head = pull.head.sha;
-
   const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
     owner,
     per_page: 100,
@@ -44,32 +45,31 @@ export const approvePullRequest = async (
   });
 
   const botReviews = reviews.filter(
-    (review) => review.user?.login === botLogin && review.commit_id === head
+    (review) => review.user?.login === botLogin
   );
 
-  const requestedChanges = botReviews.filter(
-    (review) => review.state === "CHANGES_REQUESTED"
+  const requestedChanges = botReviews.some(
+    (review) =>
+      review.state === "CHANGES_REQUESTED" &&
+      review.submitted_at !== undefined &&
+      new Date(review.submitted_at) >= runStartedAt
   );
 
-  if (requestedChanges.length > 0) {
+  if (requestedChanges) {
     return { approved: false, reason: "Review requested changes" };
   }
 
-  const alreadyApproved = botReviews.some(
-    (review) => review.state === "APPROVED"
-  );
-
-  if (alreadyApproved) {
-    return { approved: false, reason: `Already approved ${head.slice(0, 7)}` };
+  if (botReviews.at(-1)?.state === "APPROVED") {
+    return { approved: false, reason: "Already approved" };
   }
 
   // No body: the review is an approval, the findings are posted separately.
   await octokit.rest.pulls.createReview({
     event: "APPROVE",
     owner,
-    pull_number: prNumber,
+    pull_number: pull.number,
     repo,
   });
 
-  return { approved: true, reason: `Approved ${head.slice(0, 7)}` };
+  return { approved: true, reason: `Approved ${pull.head.sha.slice(0, 7)}` };
 };

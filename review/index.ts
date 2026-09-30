@@ -65,6 +65,9 @@ Please ensure the OpenReview app has access to this repository and branch.`
 
   const token = await getGitHubToken();
 
+  // Only change requests submitted after this point belong to this run.
+  const runStartedAt = new Date();
+
   // One signal bounds the whole run: the agent stops and every command it
   // started is killed, including anything those commands spawned.
   const controller = new AbortController();
@@ -107,7 +110,11 @@ Please ensure the OpenReview app has access to this repository and branch.`
     }
 
     if (env.AUTO_APPROVE) {
-      const approval = await approvePullRequest(repoFullName, prNumber);
+      const approval = await approvePullRequest(
+        repoFullName,
+        prNumber,
+        runStartedAt
+      );
       console.log(
         `[review] auto approve for ${repoFullName}#${prNumber}: ${approval.approved ? "approved" : "skipped"} (${approval.reason})`
       );
