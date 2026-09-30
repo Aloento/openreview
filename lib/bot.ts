@@ -22,7 +22,7 @@ interface PullRequestEventPayload {
   pull_request: {
     base: { ref: string };
     draft?: boolean;
-    head: { ref: string };
+    head: { ref: string; repo?: { full_name: string } | null };
     number: number;
     user?: { login: string } | null;
   };
@@ -36,6 +36,10 @@ const REVIEW_ACTIONS = new Set([
   "ready_for_review",
   "synchronize",
 ]);
+
+const isTrustedAssociation = (association: string | undefined): boolean =>
+  association !== undefined &&
+  env.TRUSTED_ASSOCIATIONS.includes(association.toUpperCase());
 
 const collectMessages = async (
   thread: Thread<unknown, unknown>
@@ -55,10 +59,24 @@ const collectMessages = async (
 let botInstance: Chat | null = null;
 
 const handleMention = async (thread: Thread, message: Message) => {
+  const raw = message.raw as GitHubRawMessage;
+
+  const { author_association: association } = raw.comment as {
+    author_association?: string;
+  };
+
+  // Reviews cost money: only authors who can write to the repository may ask
+  // for one, everyone else is ignored.
+  if (!isTrustedAssociation(association)) {
+    console.log(
+      `[bot] ignored mention from ${message.author.userName} (${association ?? "unknown"}) on ${raw.repository.full_name}#${raw.prNumber}`
+    );
+    return;
+  }
+
   await thread.adapter.addReaction(thread.id, message.id, emoji.eyes);
 
   const messages = await collectMessages(thread);
-  const raw = message.raw as GitHubRawMessage;
 
   const repoFullName = raw.repository.full_name;
   const { prNumber } = raw;
@@ -169,6 +187,16 @@ export const handlePullRequestEvent = async (
   }
 
   const repoFullName = repository.full_name;
+  const headRepo = pull.head.repo?.full_name;
+
+  // A fork can only be pushed to by its owner, who has no access here, so it is
+  // skipped unless fork reviews are explicitly enabled.
+  if (!env.REVIEW_FORK_PRS && headRepo !== repoFullName) {
+    console.log(
+      `[bot] ignored ${action} for ${repoFullName}#${pull.number} from fork ${headRepo ?? "unknown"}`
+    );
+    return;
+  }
 
   await enqueueReview({
     baseBranch: pull.base.ref,

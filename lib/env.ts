@@ -17,7 +17,25 @@ const schema = z.object({
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   MAX_AGENT_STEPS: z.coerce.number().int().positive().default(20),
   PORT: z.coerce.number().int().positive().default(8090),
+  REVIEW_FORK_PRS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   RUN_TIMEOUT_MS: z.coerce.number().int().positive().default(1_800_000),
+  /**
+   * Comment authors allowed to start a review by mentioning the bot. The values
+   * are GitHub's `author_association` values; only ones that imply write access
+   * should be listed.
+   */
+  TRUSTED_ASSOCIATIONS: z
+    .string()
+    .default("OWNER,MEMBER,COLLABORATOR")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim().toUpperCase())
+        .filter(Boolean)
+    ),
   WORKSPACE_ROOT: z.string().min(1).default("workspaces"),
 });
 

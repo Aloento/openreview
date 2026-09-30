@@ -36,6 +36,15 @@ Triggers:
 Events raised by the app itself are ignored, so the commit the agent pushes does not
 start another review.
 
+Authorisation, because every review costs tokens:
+
+- A mention only starts a review when the comment author's `author_association` is in
+  `TRUSTED_ASSOCIATIONS` (default: `OWNER`, `MEMBER`, `COLLABORATOR`). Mentions from
+  everyone else are logged and ignored, which matters when the repository is public.
+- Pull requests from forks are skipped (`REVIEW_FORK_PRS=false`): a fork can only be
+  pushed to by its owner. Pull requests for branches in the repository itself, including
+  bot branches such as dependabot's, are reviewed as usual.
+
 Approval rules:
 
 - The agent submits a change request (`gh pr review --request-changes`) when it finds a
@@ -67,6 +76,8 @@ npm run dev            # builds and starts on http://127.0.0.1:8090
 | `LLM_API_KEY` | yes | API key for that endpoint |
 | `LLM_MODEL` | yes | Model name |
 | `AUTO_APPROVE` | no | Approve when no review requested changes (default `true`) |
+| `TRUSTED_ASSOCIATIONS` | no | `author_association` values allowed to start a review by mentioning the bot (default `OWNER,MEMBER,COLLABORATOR`) |
+| `REVIEW_FORK_PRS` | no | Review pull requests from forks (default `false`) |
 | `WORKSPACE_ROOT` | no | Where pull request branches are cloned (default `workspaces`) |
 | `HOST` / `PORT` | no | Listen address (default `127.0.0.1:8090`) |
 | `LOG_LEVEL` | no | `debug`, `info`, `warn`, `error` (default `info`) |
