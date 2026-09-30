@@ -1,9 +1,7 @@
 import { env } from "@/lib/env";
 import { parseError } from "@/lib/error";
-import {
-  createWorkspace,
-  removeWorkspace,
-} from "@/lib/workspace";
+import type { Workspace } from "@/lib/workspace";
+import { createWorkspace, removeWorkspace } from "@/lib/workspace";
 
 import { addPRComment } from "./add-pr-comment";
 import { approvePullRequest } from "./approve-pr";
@@ -76,17 +74,16 @@ Please ensure the OpenReview app has access to this repository and branch.`
     env.RUN_TIMEOUT_MS
   );
 
-  const workspace = await createWorkspace(
-    repoFullName,
-    token,
-    prBranch,
-    controller.signal
-  ).catch(async (error: unknown) => {
-    clearTimeout(timeout);
-    throw error;
-  });
+  let workspace: Workspace | null = null;
 
   try {
+    workspace = await createWorkspace(
+      repoFullName,
+      token,
+      prBranch,
+      controller.signal
+    );
+
     await installDependencies(workspace);
     await configureGit(workspace, repoFullName, token);
 
@@ -138,7 +135,10 @@ ${parseError(error)}
     throw error;
   } finally {
     clearTimeout(timeout);
-    await removeWorkspace(workspace.dir);
+
+    if (workspace) {
+      await removeWorkspace(workspace.dir);
+    }
   }
 };
 
