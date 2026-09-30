@@ -36,6 +36,8 @@ export const AUTO_REVIEW_INSTRUCTION = `Review the changes in this pull request 
 
 If you find a critical problem that must be fixed before this change can be merged, submit a change request with \`gh pr review --request-changes --body "..."\` explaining why. Warnings and suggestions are reported in your reply only.
 
+Work from the diff and the files in the workspace. Do not install toolchains and do not run repository-wide builds or tests.
+
 Always post your findings with the reply tool. Do not approve the pull request.`;
 
 const runReview = async (params: ReviewParams): Promise<void> => {
