@@ -30,8 +30,6 @@ export interface ReviewParams {
   trigger: "auto" | "mention";
 }
 
-const FOOTER = `\n\n---\n*Powered by [OpenReview](https://github.com/vercel-labs/openreview)*`;
-
 export const AUTO_REVIEW_INSTRUCTION = `Review the changes in this pull request and report what you find. Group findings by severity: critical, warning, suggestion.
 
 If you find a critical problem that must be fixed before this change can be merged, submit a change request with \`gh pr review --request-changes --body "..."\` explaining why. Warnings and suggestions are reported in your reply only.
@@ -59,7 +57,7 @@ const runReview = async (params: ReviewParams): Promise<void> => {
 
 Unable to access this branch: ${pushAccess.reason}
 
-Please ensure the OpenReview app has access to this repository and branch.${FOOTER}`
+Please ensure the OpenReview app has access to this repository and branch.`
     );
 
     throw new Error(pushAccess.reason ?? "Push access denied");
@@ -124,7 +122,7 @@ An error occurred while processing your request:
 
 \`\`\`
 ${parseError(error)}
-\`\`\`${FOOTER}`
+\`\`\``
       );
     } catch {
       // Ignore comment failure

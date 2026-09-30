@@ -5,13 +5,6 @@ export interface ApprovalResult {
   reason: string;
 }
 
-const APPROVAL_BODY = `## OpenReview
-
-No blocking issues were found in this revision, so the review was approved automatically.
-
----
-*Powered by [OpenReview](https://github.com/vercel-labs/openreview)*`;
-
 /**
  * Approves the pull request when the review agent did not request changes.
  *
@@ -70,8 +63,8 @@ export const approvePullRequest = async (
     return { approved: false, reason: `Already approved ${head.slice(0, 7)}` };
   }
 
+  // No body: the review is an approval, the findings are posted separately.
   await octokit.rest.pulls.createReview({
-    body: APPROVAL_BODY,
     event: "APPROVE",
     owner,
     pull_number: prNumber,
