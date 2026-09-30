@@ -1,17 +1,41 @@
-import "server-only";
 import type { GitHubRawMessage } from "@chat-adapter/github";
 import { createGitHubAdapter } from "@chat-adapter/github";
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { createRedisState } from "@chat-adapter/state-redis";
 import { Chat, emoji } from "chat";
 import type { Message, Thread } from "chat";
-import { start } from "workflow/api";
 
 import { env } from "@/lib/env";
-import { botWorkflow } from "@/workflow";
-import type { ThreadMessage, WorkflowParams } from "@/workflow";
+import { getAppInfo, getInstallationOctokit } from "@/lib/github";
+import { AUTO_REVIEW_INSTRUCTION, enqueueReview } from "@/review";
+import type { ThreadMessage } from "@/review";
 
-import { getAppInfo, getInstallationOctokit } from "./github";
+interface ThreadState {
+  baseBranch: string;
+  prBranch: string;
+  prNumber: number;
+  repoFullName: string;
+}
+
+interface PullRequestEventPayload {
+  action: string;
+  installation?: { id: number };
+  pull_request: {
+    base: { ref: string };
+    draft?: boolean;
+    head: { ref: string };
+    number: number;
+    user?: { login: string } | null;
+  };
+  repository: { full_name: string };
+  sender?: { login: string };
+}
+
+const REVIEW_ACTIONS = new Set([
+  "opened",
+  "reopened",
+  "ready_for_review",
+  "synchronize",
+]);
 
 const collectMessages = async (
   thread: Thread<unknown, unknown>
@@ -27,17 +51,6 @@ const collectMessages = async (
 
   return messages;
 };
-
-interface ThreadState {
-  baseBranch: string;
-  prBranch: string;
-  prNumber: number;
-  repoFullName: string;
-}
-
-const state = env.REDIS_URL
-  ? createRedisState({ url: env.REDIS_URL })
-  : createMemoryState();
 
 let botInstance: Chat | null = null;
 
@@ -66,17 +79,18 @@ const handleMention = async (thread: Thread, message: Message) => {
     repoFullName,
   } satisfies ThreadState);
 
-  await start(botWorkflow, [
-    {
-      baseBranch: pr.base.ref,
-      messages,
-      prBranch: pr.head.ref,
-      prNumber,
-      repoFullName,
-      threadId: thread.id,
-    } satisfies WorkflowParams,
-  ]);
+  await enqueueReview({
+    baseBranch: pr.base.ref,
+    messages,
+    prBranch: pr.head.ref,
+    prNumber,
+    repoFullName,
+    threadId: thread.id,
+    trigger: "mention",
+  });
 };
+
+export const getBot = (): Promise<Chat> => initBot();
 
 const initBot = async (): Promise<Chat> => {
   if (botInstance) {
@@ -105,8 +119,8 @@ const initBot = async (): Promise<Chat> => {
         webhookSecret: env.GITHUB_APP_WEBHOOK_SECRET,
       }),
     },
-    logger: "debug",
-    state,
+    logger: env.LOG_LEVEL,
+    state: createMemoryState(),
     userName: appInfo.slug,
   });
 
@@ -120,39 +134,49 @@ const initBot = async (): Promise<Chat> => {
     await handleMention(thread, message);
   });
 
-  botInstance.onReaction([emoji.thumbs_up, emoji.heart], async (event) => {
-    if (!event.added || !event.message?.author.isMe) {
-      return;
-    }
-
-    const threadState = (await event.thread.state) as ThreadState | null;
-
-    if (!threadState) {
-      return;
-    }
-
-    const messages = await collectMessages(event.thread);
-
-    await start(botWorkflow, [
-      {
-        ...threadState,
-        messages,
-        threadId: event.thread.id,
-      } satisfies WorkflowParams,
-    ]);
-  });
-
-  botInstance.onReaction([emoji.thumbs_down, emoji.confused], async (event) => {
-    if (!event.added || !event.message?.author.isMe) {
-      return;
-    }
-
-    await event.thread.post(
-      `${emoji.eyes} Got it, skipping that. Mention me with feedback if you'd like a different approach.`
-    );
-  });
-
   return botInstance;
 };
 
-export const getBot = (): Promise<Chat> => initBot();
+/**
+ * Reviews pull requests automatically when they are opened or updated.
+ *
+ * The GitHub adapter only listens for comments, so `pull_request` deliveries
+ * are handled here. Events sent by the app itself are ignored to keep the
+ * commit the agent pushed from starting another review.
+ */
+export const handlePullRequestEvent = async (
+  payload: PullRequestEventPayload
+): Promise<void> => {
+  const { action, installation, pull_request: pull, repository, sender } = payload;
+
+  if (!REVIEW_ACTIONS.has(action)) {
+    return;
+  }
+
+  if (installation?.id && installation.id !== env.GITHUB_APP_INSTALLATION_ID) {
+    return;
+  }
+
+  const { slug } = await getAppInfo();
+  const botLogin = `${slug}[bot]`;
+
+  if (sender?.login === botLogin || pull.user?.login === botLogin) {
+    return;
+  }
+
+  if (pull.draft && action !== "ready_for_review") {
+    return;
+  }
+
+  const repoFullName = repository.full_name;
+
+  await enqueueReview({
+    baseBranch: pull.base.ref,
+    messages: [{ content: AUTO_REVIEW_INSTRUCTION, role: "user" }],
+    prBranch: pull.head.ref,
+    prNumber: pull.number,
+    repoFullName,
+    threadId: `github:${repoFullName}:${pull.number}`,
+    trigger: "auto",
+  });
+};

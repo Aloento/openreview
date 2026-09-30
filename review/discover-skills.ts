@@ -7,8 +7,6 @@ import { parseFrontmatter } from "@/lib/skills";
 export const discoverSkills = async (
   directories: string[]
 ): Promise<SkillMetadata[]> => {
-  "use step";
-
   const skills: SkillMetadata[] = [];
   const seenNames = new Set<string>();
 

@@ -1,4 +1,3 @@
-import "server-only";
 import { App } from "octokit";
 import type { Octokit } from "octokit";
 
@@ -36,7 +35,20 @@ export const getInstallationOctokit = (): Promise<Octokit> => {
   return githubApp.getInstallationOctokit(env.GITHUB_APP_INSTALLATION_ID);
 };
 
+let appInfo: Promise<{ botUserId: number; slug: string }> | null = null;
+
 export const getAppInfo = async (): Promise<{
+  botUserId: number;
+  slug: string;
+}> => {
+  if (!appInfo) {
+    appInfo = loadAppInfo();
+  }
+
+  return appInfo;
+};
+
+const loadAppInfo = async (): Promise<{
   botUserId: number;
   slug: string;
 }> => {
@@ -48,5 +60,5 @@ export const getAppInfo = async (): Promise<{
     username: `${appData.slug}[bot]`,
   });
 
-  return { botUserId: botUser.id, slug: appData.slug };
+  return { botUserId: Number(botUser.id), slug: appData.slug };
 };
