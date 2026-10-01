@@ -1,16 +1,12 @@
 import { env } from "@/lib/env";
 import { parseError } from "@/lib/error";
+import { getInstallationOctokit } from "@/lib/github";
 import type { Workspace } from "@/lib/workspace";
 import { createWorkspace, removeWorkspace } from "@/lib/workspace";
 
 import { addPRComment } from "./add-pr-comment";
-import { checkPushAccess } from "./check-push-access";
-import { commitAndPush } from "./commit-and-push";
-import { configureGit } from "./configure-git";
 import { buildReviewBody, createReviewContext } from "./context";
 import { getGitHubToken } from "./get-github-token";
-import { hasUncommittedChanges } from "./has-uncommitted-changes";
-import { installDependencies } from "./install-dependencies";
 import { runAgent } from "./run-agent";
 import { submitReview } from "./submit-review";
 import type { ReviewDecision } from "./submit-review";
@@ -34,7 +30,7 @@ export const AUTO_REVIEW_INSTRUCTION = `Review the changes in this pull request 
 
 If a critical problem must be fixed before this change can be merged, also call requestChanges with the reason. Warnings and suggestions only go in the review.
 
-Work from the diff and the files in the workspace. Do not install toolchains and do not run repository-wide builds or tests.`;
+Read the code; this environment cannot run builds or tests.`;
 
 const runReview = async (params: ReviewParams): Promise<void> => {
   const {
@@ -46,29 +42,15 @@ const runReview = async (params: ReviewParams): Promise<void> => {
     threadId,
   } = params;
 
-  const pushAccess = await checkPushAccess(repoFullName, prBranch);
-
-  if (!pushAccess.canPush) {
-    await addPRComment(
-      threadId,
-      `## Skipped
-
-Unable to access this branch: ${pushAccess.reason}
-
-Please ensure the OpenReview app has access to this repository and branch.`
-    );
-
-    throw new Error(pushAccess.reason ?? "Push access denied");
-  }
-
   const token = await getGitHubToken();
+  const octokit = await getInstallationOctokit();
+  const [owner, repo] = repoFullName.split("/");
 
   // Only verdicts produced after this point belong to this run.
   const runStartedAt = new Date();
   const context = createReviewContext();
 
-  // One signal bounds the whole run: the agent stops and every command it
-  // started is killed, including anything those commands spawned.
+  // One signal bounds the whole run: the checkout and the agent both stop.
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(new Error("review timed out")),
@@ -85,26 +67,16 @@ Please ensure the OpenReview app has access to this repository and branch.`
       controller.signal
     );
 
-    await installDependencies(workspace);
-    await configureGit(workspace, repoFullName, token);
-
     const agentResult = await runAgent(
       workspace,
       context,
+      { octokit, owner, prNumber, repo },
       messages,
-      prNumber,
-      repoFullName,
       controller.signal
     );
 
     if (!agentResult.success) {
       throw new Error(agentResult.errorMessage ?? "Agent failed to run");
-    }
-
-    const changed = await hasUncommittedChanges(workspace);
-
-    if (changed) {
-      await commitAndPush(workspace, "openreview: apply changes", prBranch);
     }
 
     const body = buildReviewBody(context);

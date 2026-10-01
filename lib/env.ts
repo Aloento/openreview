@@ -5,7 +5,7 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
-  BASH_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   GITHUB_APP_ID: z.string().min(1),
   GITHUB_APP_INSTALLATION_ID: z.coerce.number().int().positive(),
   GITHUB_APP_PRIVATE_KEY: z.string().min(1),
@@ -14,7 +14,6 @@ const schema = z.object({
   LLM_API_KEY: z.string().min(1),
   LLM_BASE_URL: z.string().url(),
   LLM_MODEL: z.string().min(1),
-  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   MAX_AGENT_STEPS: z.coerce.number().int().positive().default(20),
   PORT: z.coerce.number().int().positive().default(8090),
   REVIEW_FORK_PRS: z

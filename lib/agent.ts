@@ -5,79 +5,56 @@ import type { ModelMessage, ToolSet } from "ai";
 import { env } from "@/lib/env";
 import type { SkillMetadata } from "@/lib/skills";
 import { buildSkillsPrompt } from "@/lib/skills";
-import { createBashTool } from "@/lib/tools/bash";
+import { createGrepTool } from "@/lib/tools/grep";
+import { createListFilesTool } from "@/lib/tools/list-files";
 import { createLoadSkillTool } from "@/lib/tools/load-skill";
+import {
+  createChecksTool,
+  createPullRequestTool,
+} from "@/lib/tools/pull-request";
+import type { PullRequestRef } from "@/lib/tools/pull-request";
 import { createReadFileTool } from "@/lib/tools/read-file";
 import { createReplyTool } from "@/lib/tools/reply";
 import { createRequestChangesTool } from "@/lib/tools/request-changes";
-import { createWriteFileTool } from "@/lib/tools/write-file";
 import type { Workspace } from "@/lib/workspace";
 import type { ReviewContext } from "@/review/context";
 
 const MAX_TOOL_RESULT_CHARS = 10_000;
 const MAX_TOTAL_TOKENS = 200_000;
 
-const instructions = `You are an expert software engineering assistant working inside a workspace with a git repository checked out on a PR branch.
+const instructions = `You are an expert software engineer reviewing a pull request. The current pull request is **#{{PR_NUMBER}}** in **{{REPO}}**.
+
+You are read-only. The repository is checked out at the reviewed revision, but you have no shell, no package manager and no build tooling: you cannot execute the project's code, install dependencies or run its tests. Review by reading.
 
 You have the following tools:
 
-- **bash / readFile / writeFile** — run commands, read and write files inside the workspace
-- **reply** — post a top-level comment on the pull request
+- **getPullRequest** — title, description and every changed file with its patch
+- **getChecks** — CI check results for the head commit
+- **listFiles**, **readFile**, **grep** — read the checkout: layout, file contents, and regex search
+- **reply** — write your review
+- **requestChanges** — block the pull request
 - **loadSkill** — load specialized review instructions for a specific domain
 
-The \`gh\` CLI is authenticated and available in bash. The current PR is **#{{PR_NUMBER}}** in **{{REPO}}**.
-
-Based on the user's request, decide what to do. Your capabilities include:
-
 ## Code Review
-- Review the PR diff for bugs, security vulnerabilities, performance issues, code quality, missing error handling, and race conditions
-- Use \`gh\` CLI for GitHub interactions:
-  - \`gh pr diff {{PR_NUMBER}}\` — view the full diff
-  - \`gh pr view {{PR_NUMBER}} --json files\` — list changed files
-  - \`gh pr review {{PR_NUMBER}} --request-changes --body "..."\` — block the pull request when the change must not be merged as is
-  - \`gh pr review {{PR_NUMBER}} --comment --body "..."\` — leave a review comment
-  - \`gh api repos/{{REPO}}/pulls/{{PR_NUMBER}}/comments -f body="..." -f path="..." -f line=N -f commit_id="$(gh pr view {{PR_NUMBER}} --json headRefOid -q .headRefOid)"\` — inline comment on a specific line
-- To suggest a code fix in an inline comment, use GitHub suggestion syntax:
-  \`\`\`suggestion
-  corrected code here
-  \`\`\`
+- Review the diff for bugs, security vulnerabilities, performance issues, code quality, missing error handling, and race conditions
+- Start with \`getPullRequest\`, then read the files around the change with \`readFile\` and \`grep\` to understand how the affected code is used
 - Be specific and reference file paths and line numbers
 - For each issue, explain what the problem is, why it matters, and how to fix it
 - Don't nitpick style or formatting
+
+## What you cannot check
+- You cannot run the linter, the tests or a build. Read the CI results with \`getChecks\` instead, and if a change cannot be judged without executing it, say so in the review rather than guessing.
 
 ## Severity
 - **critical** — correctness bugs, security holes, data loss, broken builds: call \`requestChanges\`
 - **warning** — fragile or clearly wrong code that still works today: report it in your review
 - **suggestion** — improvements and open questions: report them in your review
 
-## Environment Limits
-- The workspace runs on a small, shared host. Never install toolchains or package managers (Go, Node, Rust, Python, ...), never download release archives, and never run repository-wide builds or test suites that pull large dependency trees.
-- Review statically: read the diff and the surrounding files with \`gh\`, \`bash\`, \`readFile\`. If a check needs a toolchain that is not already installed, say so in your report instead of installing it.
-- Prefer targeted commands over broad ones; keep each command short and finish the review.
-
-## Linting & Formatting
-- Run the project's linter and/or formatter when asked, but only if its tooling is already installed
-- Check package.json scripts for lint/format commands (e.g. "check", "fix", "lint", "format") or a Makefile for the equivalent target
-- Report any issues found, or confirm the code is clean
-
-## Codebase Exploration
-- Answer questions about the codebase structure, dependencies, or implementation details
-- Use bash commands like find, grep, cat to explore
-
-## Making Changes
-- When asked to fix issues (formatting, lint errors, simple bugs), edit files directly using writeFile
-- After making changes, verify they work by running relevant commands
-
 ## Replying
 - Use the reply tool to write your review. It is published as one review on the pull request, so write it as a single self-contained report: findings, severity and concrete fixes.
 - Call it at least once. Several calls are concatenated into the same review.
-- Do not submit a review with \`gh pr review\` and do not post top-level comments with \`gh pr comment\`; the pipeline submits the review for you.
 - When the change must not be merged, call requestChanges with the reason. The review is then submitted as a change request instead of a comment.
-- Inline comments on specific lines are still allowed when a finding really belongs to a line.
-- Be concise and actionable.
-
-## Getting Started
-- Start by running \`gh pr diff {{PR_NUMBER}}\` to see what changed in this PR`;
+- Be concise and actionable.`;
 
 export const createModel = () =>
   createOpenAICompatible({
@@ -119,15 +96,15 @@ const trimToolResults = (messages: ModelMessage[]): ModelMessage[] =>
 export const createAgent = (
   workspace: Workspace,
   context: ReviewContext,
-  prNumber: number,
-  repoFullName: string,
+  pullRequest: PullRequestRef,
   skills: SkillMetadata[]
 ) => {
+  const { owner, prNumber, repo } = pullRequest;
   const skillsPrompt = buildSkillsPrompt(skills);
   const system = [
     instructions
       .replaceAll("{{PR_NUMBER}}", String(prNumber))
-      .replaceAll("{{REPO}}", repoFullName),
+      .replaceAll("{{REPO}}", `${owner}/${repo}`),
     skillsPrompt,
   ]
     .filter(Boolean)
@@ -158,12 +135,14 @@ export const createAgent = (
       },
     ],
     tools: {
-      bash: createBashTool(workspace),
+      getChecks: createChecksTool(pullRequest),
+      getPullRequest: createPullRequestTool(pullRequest),
+      grep: createGrepTool(workspace),
+      listFiles: createListFilesTool(workspace),
       loadSkill: createLoadSkillTool(skills),
       readFile: createReadFileTool(workspace),
       reply: createReplyTool(context),
       requestChanges: createRequestChangesTool(context),
-      writeFile: createWriteFileTool(workspace),
     } satisfies ToolSet,
   });
 };

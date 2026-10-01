@@ -6,9 +6,10 @@ import { readWorkspaceFile } from "@/lib/workspace";
 
 export const createReadFileTool = (workspace: Workspace) =>
   tool({
-    description: "Read the contents of a file from the workspace.",
+    description:
+      "Read a file from the repository at the reviewed revision. Paths are relative to the repository root.",
     execute: ({ path }) => readWorkspaceFile(workspace, path),
     inputSchema: z.object({
-      path: z.string().describe("The path to the file to read"),
+      path: z.string().describe("Path of the file to read, e.g. src/app.ts"),
     }),
   });

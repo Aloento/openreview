@@ -5,8 +5,8 @@ An AI code review bot for GitHub pull requests. This is a fork of
 plain Node service on your own host instead of on Vercel.
 
 - **No serverless platform** — one `node dist/server.js` process behind a reverse proxy.
-- **No sandbox service** — the pull request branch is cloned into a local workspace,
-  which is where the agent runs commands.
+- **Read-only** — the reviewed branch is checked out and read; the agent has no shell, no
+  package manager and no build tooling, so nothing from the pull request is ever executed.
 - **Any OpenAI-compatible model** — point `LLM_BASE_URL` at your own gateway.
 - **Automatic reviews** — new and updated pull requests are reviewed without a mention.
 - **Automatic approval** — a pull request is approved when the review does not request changes.
@@ -19,16 +19,15 @@ sequenceDiagram
     participant SVC as OpenReview service
     participant LLM as LLM (OpenAI compatible)
     GH->>SVC: webhook: pull_request opened, issue_comment mention
-    SVC->>GH: clone the pull request branch into a workspace
-    SVC->>LLM: run the review agent with the repo checked out
-    LLM-->>SVC: tool calls: gh, bash, readFile, writeFile, reply, requestChanges
+    SVC->>GH: check out the pull request branch (read only)
+    SVC->>LLM: run the review agent
+    LLM-->>SVC: tools: pull request, checks, files, grep, reply, requestChanges
     SVC->>GH: one review: the findings, approved or requesting changes
-    SVC->>GH: commit and push fixes (when the agent made changes)
 ```
 
-The agent writes with the `reply` tool and the pipeline submits exactly one review
-carrying that text, so a pull request never gets both a comment and a review for the
-same run.
+The agent reads the diff, the CI results and the surrounding code, and writes with the
+`reply` tool; the pipeline submits exactly one review carrying that text, so a pull request
+never gets both a comment and a review for the same run.
 
 Triggers:
 
@@ -85,12 +84,11 @@ npm run dev            # builds and starts on http://127.0.0.1:8090
 | `AUTO_APPROVE` | no | Approve when no review requested changes (default `true`) |
 | `TRUSTED_ASSOCIATIONS` | no | `author_association` values allowed to start a review by mentioning the bot (default `OWNER,MEMBER,COLLABORATOR`) |
 | `REVIEW_FORK_PRS` | no | Review pull requests from forks (default `false`) |
-| `WORKSPACE_ROOT` | no | Where pull request branches are cloned (default `workspaces`) |
+| `WORKSPACE_ROOT` | no | Where pull request branches are checked out (default `workspaces`) |
 | `HOST` / `PORT` | no | Listen address (default `127.0.0.1:8090`) |
 | `LOG_LEVEL` | no | `debug`, `info`, `warn`, `error` (default `info`) |
 | `MAX_AGENT_STEPS` | no | Tool loop budget (default `20`) |
 | `RUN_TIMEOUT_MS` | no | Limit for one review (default `1800000`) |
-| `BASH_TIMEOUT_MS` | no | Limit for one agent command (default `300000`) |
 
 ## Deploy
 
@@ -100,9 +98,8 @@ The service serves two routes: `POST /webhook` (also aliased as `/api/webhooks`)
 1. Build the bundle on a machine with a normal toolchain:
    `npm install && npm run build`
 2. Copy to the host: `dist/server.js`, `dist/server.js.map`, `.agents/` (the review
-   skills) and a `.env` with the variables above. The host needs Node 20.9+, `git`,
-   `bash` and the `gh` CLI — the agent uses `gh` for pull request operations, and it is
-   authenticated through the `GH_TOKEN` environment of each command.
+   skills) and a `.env` with the variables above. The host needs Node 20.9+ and `git`
+   (for the read-only checkout) and nothing else.
 3. Run it under systemd:
 
 ```ini
@@ -148,19 +145,19 @@ Webhook URL: `https://<your-host>/webhook`, content type `application/json`.
 
 ## Security
 
-- Reviews run pull request code on the host: dependencies are installed and the agent
-  executes shell commands inside the workspace. Run this on a host you are willing to
-  expose to repository code, and only on branches whose content you trust.
+- The service never executes anything from a pull request. There is no shell tool, no
+  dependency installation and no build step: the branch is checked out read-only
+  (`git clone`, hooks disabled, and it is the only subprocess the service starts) and the
+  agent's tools only read files or query the GitHub API. This is enforced by the shape of
+  the tool set, not by prompting.
+- The service cannot modify pull requests beyond reviewing them: findings are submitted
+  as a review, and no code is ever pushed to a branch.
+- Reviews are serialised — one checkout and one agent run at a time.
 - Each run gets its own temporary directory with mode `0700`, removed when the review
   finishes. Stale directories are cleaned up on startup.
-- Reviews are serialised — one workspace and one agent run at a time.
-- Every command runs in its own process group and is killed with that group when it
-  exceeds `BASH_TIMEOUT_MS`, or when the run as a whole exceeds `RUN_TIMEOUT_MS`.
-- The installation token is passed through the environment of the commands that need it
-  and is also kept in the workspace git remote, which is why the workspace stays private
-  and is deleted after the run.
-- Git hooks from the pull request branch are disabled (`core.hooksPath=/dev/null`), and
-  `node_modules/` is excluded from commits the agent makes.
+- The installation token is only used to check the branch out and to call the API.
+- The systemd unit caps the service cgroup (`CPUQuota`, `MemoryMax`, `TasksMax`) so a
+  runaway review cannot starve the host.
 
 ## Differences from upstream
 
@@ -168,6 +165,9 @@ Webhook URL: `https://<your-host>/webhook`, content type `application/json`.
   web UI are gone. The review pipeline is a plain async function queue in `review/`.
 - The agent is an AI SDK `ToolLoopAgent` against an OpenAI-compatible endpoint instead of
   a Claude model through the AI Gateway.
+- The agent runs no code: upstream gave it a sandboxed shell, a file writer and the `gh`
+  CLI. Here it gets pull request, check, file-list, file-read and grep tools instead, so
+  installs, builds and pushes are impossible rather than merely discouraged.
 - `pull_request` events are handled directly in `lib/bot.ts`, since the GitHub chat
   adapter only receives comments, and `review/submit-review.ts` submits the single
   review with the verdict.
@@ -175,6 +175,8 @@ Webhook URL: `https://<your-host>/webhook`, content type `application/json`.
 
 ## Known limitations
 
+- The agent cannot run the linter, the tests or a build; it reads the code and the CI
+  results instead. Findings that would need execution are reported as such.
 - GitHub does not deliver reaction webhooks, so reacting to a comment cannot trigger
   anything. Upstream's 👍/❤️ handlers are inert here for the same reason.
 - One process handles reviews sequentially; a restart drops queued reviews.

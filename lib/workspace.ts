@@ -1,24 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { env } from "@/lib/env";
 import { parseError } from "@/lib/error";
 
 export interface Workspace {
   dir: string;
-  /**
-   * Environment exposed to every command run inside the workspace. Holds the
-   * installation token so `git` and `gh` are authenticated without writing
-   * credentials to disk.
-   */
-  env: Record<string, string>;
-  id: string;
-  /**
-   * Aborts every command started in this workspace. Commands run in their own
-   * process group, so aborting kills the whole tree instead of leaving
-   * grandchildren (npm, go, test runners) behind.
-   */
   signal?: AbortSignal;
 }
 
@@ -30,10 +18,36 @@ export interface CommandResult {
 
 interface RunOptions {
   cwd?: string;
-  env?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
+
+/**
+ * Directories that are never worth reading: dependencies, build output and
+ * version control metadata.
+ */
+const IGNORED_DIRS = new Set([
+  ".git",
+  ".next",
+  ".nuxt",
+  ".output",
+  ".svelte-kit",
+  ".turbo",
+  ".venv",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+  "vendor",
+]);
+
+const MAX_LISTED_FILES = 2_000;
+const MAX_READ_BYTES = 200_000;
+const MAX_GREP_FILE_BYTES = 1_000_000;
+const MAX_GREP_MATCHES = 200;
+const MAX_GREP_SCANNED_FILES = 5_000;
 
 let rootDir: string | null = null;
 
@@ -47,10 +61,10 @@ const getRootDir = async (): Promise<string> => {
 };
 
 /**
- * Runs a command without a shell and resolves with its exit code and output.
- * Never rejects on a non-zero exit code so callers can decide how to react.
+ * Runs a command without a shell. Only ever used for the checkout below: the
+ * agent has no way to run anything.
  */
-export const runCommand = (
+const runCommand = (
   command: string,
   args: string[],
   options: RunOptions = {}
@@ -58,9 +72,8 @@ export const runCommand = (
   new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      // Own process group, so a timeout can kill everything the command starts.
+      // Own process group, so a timeout kills everything the command started.
       detached: true,
-      env: { ...process.env, ...options.env },
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -81,7 +94,7 @@ export const runCommand = (
       }
     };
 
-    const timer = setTimeout(killTree, options.timeoutMs ?? env.BASH_TIMEOUT_MS);
+    const timer = setTimeout(killTree, options.timeoutMs ?? env.RUN_TIMEOUT_MS);
 
     options.signal?.addEventListener("abort", killTree, { once: true });
 
@@ -115,29 +128,14 @@ export const runCommand = (
     });
 
     child.on("close", (exitCode, signal) => {
-      finish({
-        exitCode: exitCode ?? (signal ? 124 : 0),
-        stderr,
-        stdout,
-      });
+      finish({ exitCode: exitCode ?? (signal ? 124 : 0), stderr, stdout });
     });
   });
 
-export const runBash = (
-  workspace: Workspace,
-  command: string,
-  options: Omit<RunOptions, "cwd" | "env" | "signal"> = {}
-): Promise<CommandResult> =>
-  runCommand("bash", ["-c", command], {
-    ...options,
-    cwd: workspace.dir,
-    env: workspace.env,
-    signal: workspace.signal,
-  });
-
 /**
- * Clones the PR branch into a private temporary directory. The authenticated
- * remote is kept in the workspace so the agent can push commits back.
+ * Checks out the pull request branch so its files can be read. Nothing from the
+ * checkout is ever executed: hooks are not part of a clone and are disabled
+ * anyway, and this is the only subprocess the service ever starts.
  */
 export const createWorkspace = async (
   repoFullName: string,
@@ -160,6 +158,8 @@ export const createWorkspace = async (
         "--single-branch",
         "--branch",
         branch,
+        "--config",
+        "core.hooksPath=/dev/null",
         remote,
         ".",
       ],
@@ -174,17 +174,12 @@ export const createWorkspace = async (
   } catch (error) {
     await removeWorkspace(dir);
 
-    throw new Error(`Failed to create workspace: ${parseError(error)}`, {
+    throw new Error(`Failed to check out the branch: ${parseError(error)}`, {
       cause: error,
     });
   }
 
-  return {
-    dir,
-    env: { GH_TOKEN: token, GITHUB_TOKEN: token },
-    id: dir,
-    signal,
-  };
+  return { dir, signal };
 };
 
 export const removeWorkspace = async (dir: string): Promise<void> => {
@@ -211,10 +206,11 @@ export const removeStaleWorkspaces = async (): Promise<void> => {
 };
 
 const resolveWorkspacePath = (dir: string, path: string): string => {
-  const target = isAbsolute(path) ? resolve(path) : resolve(dir, path);
+  const root = resolve(dir);
+  const target = isAbsolute(path) ? resolve(path) : resolve(root, path);
 
-  if (target !== dir && !target.startsWith(`${resolve(dir)}/`)) {
-    throw new Error(`Path escapes the workspace: ${path}`);
+  if (target !== root && !target.startsWith(`${root}/`)) {
+    throw new Error(`Path escapes the repository: ${path}`);
   }
 
   return target;
@@ -223,24 +219,151 @@ const resolveWorkspacePath = (dir: string, path: string): string => {
 export const readWorkspaceFile = async (
   workspace: Workspace,
   path: string
-): Promise<{ content: string }> => {
+): Promise<{ content: string; truncated: boolean }> => {
   const target = resolveWorkspacePath(workspace.dir, path);
+  const info = await stat(target).catch(() => null);
 
-  try {
-    return { content: await readFile(target, "utf8") };
-  } catch {
+  if (!info) {
     throw new Error(`File not found: ${path}`);
+  }
+
+  if (!info.isFile()) {
+    throw new Error(`Not a file: ${path}`);
+  }
+
+  const content = await readFile(target, "utf8");
+  const truncated = content.length > MAX_READ_BYTES;
+
+  return {
+    content: truncated
+      ? `${content.slice(0, MAX_READ_BYTES)}\n[truncated]`
+      : content,
+    truncated,
+  };
+};
+
+interface WalkState {
+  files: number;
+}
+
+const walk = async (
+  dir: string,
+  onFile: (path: string) => void | Promise<void>,
+  state: WalkState
+): Promise<void> => {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+
+  for (const entry of entries) {
+    if (state.files >= MAX_LISTED_FILES) {
+      return;
+    }
+
+    const full = join(dir, entry.name);
+
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRS.has(entry.name)) {
+        continue;
+      }
+
+      await walk(full, onFile, state);
+      continue;
+    }
+
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    state.files += 1;
+    await onFile(full);
   }
 };
 
-export const writeWorkspaceFile = async (
-  workspace: Workspace,
-  path: string,
-  content: string
-): Promise<{ success: boolean }> => {
-  const target = resolveWorkspacePath(workspace.dir, path);
-  await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, content, "utf8");
+export const listWorkspaceFiles = async (
+  workspace: Workspace
+): Promise<{ files: string[]; truncated: boolean }> => {
+  const state: WalkState = { files: 0 };
+  const files: string[] = [];
 
-  return { success: true };
+  await walk(
+    workspace.dir,
+    (path) => {
+      files.push(relative(workspace.dir, path));
+    },
+    state
+  );
+
+  return { files: files.sort(), truncated: state.files >= MAX_LISTED_FILES };
+};
+
+export interface GrepMatch {
+  line: number;
+  path: string;
+  text: string;
+}
+
+/**
+ * Plain-text search over the checkout, done in process: the agent has no shell,
+ * so this is how it looks for a symbol.
+ */
+export const grepWorkspace = async (
+  workspace: Workspace,
+  pattern: string,
+  pathPrefix?: string
+): Promise<{ matches: GrepMatch[]; scannedFiles: number; truncated: boolean }> => {
+  const regex = new RegExp(pattern, "i");
+  const base = pathPrefix
+    ? resolveWorkspacePath(workspace.dir, pathPrefix)
+    : workspace.dir;
+
+  const state: WalkState = { files: 0 };
+  const matches: GrepMatch[] = [];
+  let scanned = 0;
+  let truncated = false;
+
+  await walk(
+    base,
+    async (path) => {
+      if (truncated || scanned >= MAX_GREP_SCANNED_FILES) {
+        truncated = true;
+        return;
+      }
+
+      const info = await stat(path).catch(() => null);
+
+      if (!info || info.size > MAX_GREP_FILE_BYTES) {
+        return;
+      }
+
+      scanned += 1;
+
+      const content = await readFile(path, "utf8").catch(() => null);
+
+      // Binary content would waste the whole budget on one file.
+      if (content === null || content.includes("\u0000")) {
+        return;
+      }
+
+      const lines = content.split("\n");
+
+      for (const [index, line] of lines.entries()) {
+        if (!regex.test(line)) {
+          continue;
+        }
+
+        matches.push({
+          line: index + 1,
+          path: relative(workspace.dir, path),
+          text: line.trim().slice(0, 200),
+        });
+
+        if (matches.length >= MAX_GREP_MATCHES) {
+          truncated = true;
+          return;
+        }
+      }
+    },
+    state
+  );
+
+  return { matches, scannedFiles: scanned, truncated };
 };

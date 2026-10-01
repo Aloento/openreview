@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { createAgent } from "@/lib/agent";
 import { parseError } from "@/lib/error";
+import type { PullRequestRef } from "@/lib/tools/pull-request";
 import type { Workspace } from "@/lib/workspace";
 import type { ReviewContext } from "@/review/context";
 
@@ -16,9 +17,8 @@ export interface AgentResult {
 export const runAgent = async (
   workspace: Workspace,
   context: ReviewContext,
-  threadMessages: ThreadMessage[],
-  prNumber: number,
-  repoFullName: string,
+  pullRequest: PullRequestRef,
+  messages: ThreadMessage[],
   signal?: AbortSignal
 ): Promise<AgentResult> => {
   try {
@@ -26,17 +26,11 @@ export const runAgent = async (
       resolve(process.cwd(), ".agents/skills"),
     ]);
 
-    const agent = createAgent(
-      workspace,
-      context,
-      prNumber,
-      repoFullName,
-      skills
-    );
+    const agent = createAgent(workspace, context, pullRequest, skills);
 
     await agent.generate({
       abortSignal: signal,
-      messages: threadMessages.map((msg) => ({
+      messages: messages.map((msg) => ({
         content: msg.content,
         role: msg.role,
       })),
