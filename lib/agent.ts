@@ -26,13 +26,28 @@ const MAX_TOTAL_TOKENS = 200_000;
  */
 const MAX_OUTPUT_TOKENS = 2_500;
 /**
- * Steps after which the agent is told to stop reading and publish. A review
- * that takes too long is as useless as no review.
+ * Steps reserved for the wrap-up phase. The agent is told to stop reading and
+ * publish once it reaches this many steps from the end, and its final step is
+ * forced to call submitReview so a review is always produced.
  */
-const STEP_RESERVE = 4;
+const STEP_RESERVE = 6;
 
 const WRAP_UP =
   "Stop reading now and publish your review with submitReview: the findings from what you have already seen, by severity, with file and line references and concrete fixes.";
+
+/**
+ * System prompt for the fallback agent that runs after the main agent used up
+ * its steps without publishing. It only has submitReview, so the prompt must
+ * not mention any other tool — the full review prompt makes the model keep
+ * trying to read files it no longer has.
+ */
+const VERDICT_INSTRUCTIONS = `You have already reviewed pull request **#{{PR_NUMBER}}** in **{{REPO}}**. Your analysis is in the conversation history above.
+
+Your only remaining task is to publish the review. Call the submitReview tool exactly once, with:
+- **body**: the complete review in markdown — a short summary, then findings grouped by severity (critical / warning / suggestion), each with file path, line reference, why it matters, and the concrete fix.
+- **verdict**: "request_changes" if anything must be fixed before merging (correctness bugs, security holes, data loss, broken builds), otherwise "approve".
+
+Do not call any other tool and do not re-read files. Publish the review now.`;
 
 const instructions = `You are an expert software engineer reviewing a pull request. The current pull request is **#{{PR_NUMBER}}** in **{{REPO}}**.
 
@@ -114,10 +129,10 @@ export const createAgent = (
   const { owner, prNumber, repo } = pullRequest;
   const skillsPrompt = buildSkillsPrompt(skills);
   const system = [
-    instructions
+    (onlyVerdictTools ? VERDICT_INSTRUCTIONS : instructions)
       .replaceAll("{{PR_NUMBER}}", String(prNumber))
       .replaceAll("{{REPO}}", `${owner}/${repo}`),
-    skillsPrompt,
+    onlyVerdictTools ? "" : skillsPrompt,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -134,6 +149,7 @@ export const createAgent = (
     ...(onlyVerdictTools
       ? {
           activeTools: ["submitReview"] satisfies Array<"submitReview">,
+          toolChoice: "required" as const,
         }
       : {}),
     onStepFinish: (step) => {
@@ -156,12 +172,23 @@ export const createAgent = (
         return { messages: trimmed };
       }
 
+      // On the final step, force the model to publish so it cannot spend its
+      // last turn reading. The verdict agent returns early (wrapUpAfter is
+      // Infinity) and already forces submitReview at the top level.
+      const isFinalStep = stepNumber === maxSteps - 1;
+
       return {
         messages: [...trimmed, { content: WRAP_UP, role: "user" }],
+        ...(isFinalStep
+          ? { toolChoice: { type: "tool", toolName: "submitReview" } as const }
+          : {}),
       };
     },
     stopWhen: [
       stepCountIs(maxSteps),
+      // Stop as soon as the review has been published, so the agent does not
+      // keep reading (and the verdict agent does not call submitReview again).
+      () => Boolean(context.body),
       ({ steps }) => {
         let totalTokens = 0;
 
