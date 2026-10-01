@@ -21,6 +21,11 @@ import type { ReviewContext } from "@/review/context";
 const MAX_TOOL_RESULT_CHARS = 10_000;
 const MAX_TOTAL_TOKENS = 200_000;
 /**
+ * Hard cap per step. The gateway generates slowly, so one runaway answer can
+ * cost minutes; the review is asked to stay short enough to fit here.
+ */
+const MAX_OUTPUT_TOKENS = 2_500;
+/**
  * Steps after which the agent is told to stop reading and publish. A review
  * that takes too long is as useless as no review.
  */
@@ -124,6 +129,7 @@ export const createAgent = (
 
   return new ToolLoopAgent({
     instructions: system,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
     model: createModel(),
     ...(onlyVerdictTools
       ? {

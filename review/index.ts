@@ -45,6 +45,22 @@ const runReview = async (params: ReviewParams): Promise<void> => {
   const octokit = await getInstallationOctokit();
   const [owner, repo] = repoFullName.split("/");
 
+  // The pull request may have been closed while this review was queued: a
+  // closed or merged one is history, so nothing is read and nothing is posted.
+  const { data: pull } = await octokit.rest.pulls.get({
+    owner,
+    pull_number: prNumber,
+    repo,
+  });
+
+  if (pull.state !== "open") {
+    console.log(
+      `[review] skipped ${repoFullName}#${prNumber}: pull request is ${pull.state}`
+    );
+
+    return;
+  }
+
   // Only verdicts produced after this point belong to this run.
   const runStartedAt = new Date();
   const context = createReviewContext();
@@ -163,19 +179,25 @@ const scheduled = new Map<string, string>();
  */
 export const enqueueReview = (params: ReviewParams): Promise<void> => {
   const key = `${params.repoFullName}#${params.prNumber}`;
+  const revision = params.headSha || "";
+  const revisionLabel = revision ? ` @ ${revision.slice(0, 7)}` : "";
 
-  if (scheduled.get(key) === params.headSha) {
+  // Without a commit there is nothing to key on, so the trigger is honoured.
+  if (revision && scheduled.get(key) === revision) {
     console.log(
-      `[review] dropping the ${params.trigger} trigger for ${key} @ ${params.headSha.slice(0, 7)}: that revision is already queued`
+      `[review] dropping the ${params.trigger} trigger for ${key}${revisionLabel}: that revision is already queued`
     );
 
     return Promise.resolve();
   }
 
-  scheduled.set(key, params.headSha);
+  if (revision) {
+    scheduled.set(key, revision);
+  }
+
   queued += 1;
   console.log(
-    `[review] queued ${key} @ ${params.headSha.slice(0, 7)} (${params.trigger}), ${queued} pending`
+    `[review] queued ${key}${revisionLabel} (${params.trigger}), ${queued} pending`
   );
 
   const run = queue.then(async () => {
@@ -190,7 +212,7 @@ export const enqueueReview = (params: ReviewParams): Promise<void> => {
     } catch (error) {
       console.error(`[review] failed ${key}: ${parseError(error)}`);
     } finally {
-      if (scheduled.get(key) === params.headSha) {
+      if (revision && scheduled.get(key) === revision) {
         scheduled.delete(key);
       }
     }

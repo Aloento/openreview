@@ -74,10 +74,6 @@ const handleMention = async (thread: Thread, message: Message) => {
     return;
   }
 
-  await thread.adapter.addReaction(thread.id, message.id, emoji.eyes);
-
-  const messages = await collectMessages(thread);
-
   const repoFullName = raw.repository.full_name;
   const { prNumber } = raw;
 
@@ -89,6 +85,24 @@ const handleMention = async (thread: Thread, message: Message) => {
     pull_number: prNumber,
     repo,
   });
+
+  // A closed or merged pull request is history: nothing is read, nothing is
+  // posted, and not even a reaction is added.
+  if (pr.state !== "open") {
+    console.log(
+      `[bot] ignored mention on ${repoFullName}#${prNumber}: pull request is ${pr.state}`
+    );
+
+    return;
+  }
+
+  console.log(
+    `[bot] mention accepted: ${repoFullName}#${prNumber} by ${message.author.userName}`
+  );
+
+  await thread.adapter.addReaction(thread.id, message.id, emoji.eyes);
+
+  const messages = await collectMessages(thread);
 
   await thread.setState({
     baseBranch: pr.base.ref,
