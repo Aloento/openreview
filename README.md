@@ -38,6 +38,12 @@ Triggers:
 Events raised by the app itself are ignored, so the commit the agent pushes does not
 start another review.
 
+Closed and merged pull requests are ignored everywhere: a mention on one is dropped
+before anything is read or reacted to, and a review that is already queued is dropped
+when the pull request turns out to be closed. A revision is reviewed once — triggers
+raised together (a mention also raises a `pull_request` event) collapse, and an
+identical review is never posted twice.
+
 Authorisation, because every review costs tokens:
 
 - A mention only starts a review when the comment author's `author_association` is in
@@ -92,7 +98,7 @@ npm run dev            # builds and starts on http://127.0.0.1:8090
 | `WORKSPACE_ROOT` | no | Where pull request branches are checked out (default `workspaces`) |
 | `HOST` / `PORT` | no | Listen address (default `127.0.0.1:8090`) |
 | `LOG_LEVEL` | no | `debug`, `info`, `warn`, `error` (default `info`) |
-| `MAX_AGENT_STEPS` | no | Tool loop budget (default `20`) |
+| `MAX_AGENT_STEPS` | no | Tool loop budget (default `12`) |
 | `RUN_TIMEOUT_MS` | no | Limit for one review (default `1800000`) |
 
 ## Deploy
@@ -182,6 +188,11 @@ Webhook URL: `https://<your-host>/webhook`, content type `application/json`.
 
 - The agent cannot run the linter, the tests or a build; it reads the code and the CI
   results instead. Findings that would need execution are reported as such.
+- Reviews are bounded rather than exhaustive: reads are capped (40k characters per file,
+  60k for the changed patches), the tool budget is 12 steps with a wrap-up prompt four
+  steps before the limit, and a single step may output 2.5k tokens. A review of a large
+  pull request therefore reports what the agent reached within that budget. Measured on a
+  six-file pull request: 150s, against 600s+ before the bounds.
 - GitHub does not deliver reaction webhooks, so reacting to a comment cannot trigger
   anything. Upstream's 👍/❤️ handlers are inert here for the same reason.
 - One process handles reviews sequentially; a restart drops queued reviews.
