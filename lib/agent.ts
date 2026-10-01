@@ -20,6 +20,14 @@ import type { ReviewContext } from "@/review/context";
 
 const MAX_TOOL_RESULT_CHARS = 10_000;
 const MAX_TOTAL_TOKENS = 200_000;
+/**
+ * Steps after which the agent is told to stop reading and publish. A review
+ * that takes too long is as useless as no review.
+ */
+const STEP_RESERVE = 4;
+
+const WRAP_UP =
+  "Stop reading now and publish your review with submitReview: the findings from what you have already seen, by severity, with file and line references and concrete fixes.";
 
 const instructions = `You are an expert software engineer reviewing a pull request. The current pull request is **#{{PR_NUMBER}}** in **{{REPO}}**.
 
@@ -49,9 +57,10 @@ You have the following tools:
 - **suggestion** — improvements and open questions: report them, verdict \`approve\`
 
 ## Publishing
-- \`submitReview\` is the only output. Its body is published as the review on the pull request, and its verdict decides whether that review approves the change or requests changes. Nothing else you write reaches the pull request, and there is no tool for posting comments.
+- \`submitReview\` is the only output. Its body is published as the review on the pull request, and its verdict decides whether that review approves the change or requests changes. Nothing else you write reaches the pull request.
 - Call it exactly once, when the review is complete, with the whole report in the body.
-- Be concise and actionable.`;
+- Work within a small budget of tool calls: read the diff, then only the files that the change actually depends on, and publish. Do not read the whole repository.
+- Keep the review short: a summary and the findings that matter, no restating the diff. Be longer only when there are critical problems.`;
 
 export const createModel = () =>
   createOpenAICompatible({
@@ -109,6 +118,9 @@ export const createAgent = (
     .join("\n\n");
 
   const maxSteps = onlyVerdictTools ? 3 : env.MAX_AGENT_STEPS;
+  const wrapUpAfter = onlyVerdictTools
+    ? Number.POSITIVE_INFINITY
+    : Math.max(1, maxSteps - STEP_RESERVE);
 
   return new ToolLoopAgent({
     instructions: system,
@@ -131,9 +143,17 @@ export const createAgent = (
         );
       }
     },
-    prepareStep: ({ messages }) => ({
-      messages: trimToolResults(messages as ModelMessage[]),
-    }),
+    prepareStep: ({ messages, stepNumber }) => {
+      const trimmed = trimToolResults(messages as ModelMessage[]);
+
+      if (stepNumber < wrapUpAfter) {
+        return { messages: trimmed };
+      }
+
+      return {
+        messages: [...trimmed, { content: WRAP_UP, role: "user" }],
+      };
+    },
     stopWhen: [
       stepCountIs(maxSteps),
       ({ steps }) => {

@@ -14,7 +14,7 @@ const schema = z.object({
   LLM_API_KEY: z.string().min(1),
   LLM_BASE_URL: z.string().url(),
   LLM_MODEL: z.string().min(1),
-  MAX_AGENT_STEPS: z.coerce.number().int().positive().default(20),
+  MAX_AGENT_STEPS: z.coerce.number().int().positive().default(12),
   PORT: z.coerce.number().int().positive().default(8090),
   REVIEW_FORK_PRS: z
     .enum(["true", "false"])

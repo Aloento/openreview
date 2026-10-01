@@ -2,8 +2,8 @@ import { tool } from "ai";
 import type { Octokit } from "octokit";
 import { z } from "zod";
 
-const MAX_PATCH_CHARS = 4_000;
-const MAX_TOTAL_PATCH_CHARS = 120_000;
+const MAX_PATCH_CHARS = 3_000;
+const MAX_TOTAL_PATCH_CHARS = 60_000;
 
 export interface PullRequestRef {
   octokit: Octokit;

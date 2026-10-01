@@ -44,7 +44,12 @@ const IGNORED_DIRS = new Set([
 ]);
 
 const MAX_LISTED_FILES = 2_000;
-const MAX_READ_BYTES = 200_000;
+/**
+ * Reading a large file costs far more than it helps: every character stays in
+ * the context for the rest of the run, and a slow context makes every following
+ * step slow too.
+ */
+const MAX_READ_BYTES = 40_000;
 const MAX_GREP_FILE_BYTES = 1_000_000;
 const MAX_GREP_MATCHES = 200;
 const MAX_GREP_SCANNED_FILES = 5_000;
