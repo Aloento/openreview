@@ -14,8 +14,7 @@ import {
 } from "@/lib/tools/pull-request";
 import type { PullRequestRef } from "@/lib/tools/pull-request";
 import { createReadFileTool } from "@/lib/tools/read-file";
-import { createReplyTool } from "@/lib/tools/reply";
-import { createRequestChangesTool } from "@/lib/tools/request-changes";
+import { createSubmitReviewTool } from "@/lib/tools/submit-review";
 import type { Workspace } from "@/lib/workspace";
 import type { ReviewContext } from "@/review/context";
 
@@ -31,8 +30,7 @@ You have the following tools:
 - **getPullRequest** — title, description and every changed file with its patch
 - **getChecks** — CI check results for the head commit
 - **listFiles**, **readFile**, **grep** — read the checkout: layout, file contents, and regex search
-- **reply** — write your review
-- **requestChanges** — block the pull request
+- **submitReview** — publish your review (the only output)
 - **loadSkill** — load specialized review instructions for a specific domain
 
 ## Code Review
@@ -46,14 +44,13 @@ You have the following tools:
 - You cannot run the linter, the tests or a build. Read the CI results with \`getChecks\` instead, and if a change cannot be judged without executing it, say so in the review rather than guessing.
 
 ## Severity
-- **critical** — correctness bugs, security holes, data loss, broken builds: call \`requestChanges\`
-- **warning** — fragile or clearly wrong code that still works today: report it in your review
-- **suggestion** — improvements and open questions: report them in your review
+- **critical** — correctness bugs, security holes, data loss, broken builds: verdict \`request_changes\`
+- **warning** — fragile or clearly wrong code that still works today: report it, verdict \`approve\`
+- **suggestion** — improvements and open questions: report them, verdict \`approve\`
 
-## Replying
-- Use the reply tool to write your review. It is published as one review on the pull request, so write it as a single self-contained report: findings, severity and concrete fixes.
-- Call it at least once. Several calls are concatenated into the same review.
-- When the change must not be merged, call requestChanges with the reason. The review is then submitted as a change request instead of a comment.
+## Publishing
+- \`submitReview\` is the only output. Its body is published as the review on the pull request, and its verdict decides whether that review approves the change or requests changes. Nothing else you write reaches the pull request, and there is no tool for posting comments.
+- Call it exactly once, when the review is complete, with the whole report in the body.
 - Be concise and actionable.`;
 
 export const createModel = () =>
@@ -97,7 +94,8 @@ export const createAgent = (
   workspace: Workspace,
   context: ReviewContext,
   pullRequest: PullRequestRef,
-  skills: SkillMetadata[]
+  skills: SkillMetadata[],
+  onlyVerdictTools = false
 ) => {
   const { owner, prNumber, repo } = pullRequest;
   const skillsPrompt = buildSkillsPrompt(skills);
@@ -110,19 +108,34 @@ export const createAgent = (
     .filter(Boolean)
     .join("\n\n");
 
+  const maxSteps = onlyVerdictTools ? 3 : env.MAX_AGENT_STEPS;
+
   return new ToolLoopAgent({
     instructions: system,
     model: createModel(),
+    ...(onlyVerdictTools
+      ? {
+          activeTools: ["submitReview"] satisfies Array<"submitReview">,
+        }
+      : {}),
     onStepFinish: (step) => {
       console.log(
         `[agent] step: ${step.usage.inputTokens ?? 0} in / ${step.usage.outputTokens ?? 0} out`
       );
+
+      for (const call of step.toolCalls ?? []) {
+        const input = JSON.stringify(call.input ?? {});
+
+        console.log(
+          `[agent]   ${call.toolName}(${input.length > 160 ? `${input.slice(0, 160)}…` : input})`
+        );
+      }
     },
     prepareStep: ({ messages }) => ({
       messages: trimToolResults(messages as ModelMessage[]),
     }),
     stopWhen: [
-      stepCountIs(env.MAX_AGENT_STEPS),
+      stepCountIs(maxSteps),
       ({ steps }) => {
         let totalTokens = 0;
 
@@ -141,8 +154,7 @@ export const createAgent = (
       listFiles: createListFilesTool(workspace),
       loadSkill: createLoadSkillTool(skills),
       readFile: createReadFileTool(workspace),
-      reply: createReplyTool(context),
-      requestChanges: createRequestChangesTool(context),
+      submitReview: createSubmitReviewTool(context),
     } satisfies ToolSet,
   });
 };

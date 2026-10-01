@@ -1,21 +1,15 @@
 /**
- * Collects what the agent produced during one review. The text written with the
- * reply tool becomes the body of the single review the pipeline submits, and a
- * change request made with the requestChanges tool decides its verdict.
+ * The single review a run may produce. The agent writes it with the
+ * submitReview tool, and the pipeline submits it as one review on the pull
+ * request: an approval or a change request, either way carrying the findings.
+ * There is no other output channel.
  */
 export interface ReviewContext {
-  requestChanges?: string;
-  replies: string[];
+  body?: string;
+  verdict?: "approve" | "request_changes";
 }
 
-export const createReviewContext = (): ReviewContext => ({ replies: [] });
+export const createReviewContext = (): ReviewContext => ({});
 
-export const buildReviewBody = (context: ReviewContext): string => {
-  const parts = [...context.replies];
-
-  if (context.requestChanges) {
-    parts.push(`**Requesting changes:** ${context.requestChanges}`);
-  }
-
-  return parts.join("\n\n---\n\n").trim();
-};
+export const buildReviewBody = (context: ReviewContext): string =>
+  context.body?.trim() ?? "";

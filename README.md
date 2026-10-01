@@ -55,6 +55,8 @@ Approval rules:
   as a plain comment (`AUTO_APPROVE=false`).
 - Drafts and closed pull requests are skipped; in that case the findings are posted as a
   comment so nothing is lost.
+- A review with no text at all is never submitted: an agent that reported nothing is not a
+  reason to approve.
 - A pull request that is already approved is not approved twice. A change request made
   during the same run is never followed by an approval, while a change request from an
   earlier run does not block the next review from approving.

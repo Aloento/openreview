@@ -26,11 +26,9 @@ export interface ReviewParams {
   trigger: "auto" | "mention";
 }
 
-export const AUTO_REVIEW_INSTRUCTION = `Review the changes in this pull request and write your findings with the reply tool. Group them by severity: critical, warning, suggestion.
+export const AUTO_REVIEW_INSTRUCTION = `Review the changes in this pull request and submit your review with the submitReview tool.
 
-If a critical problem must be fixed before this change can be merged, also call requestChanges with the reason. Warnings and suggestions only go in the review.
-
-Read the code; this environment cannot run builds or tests.`;
+Read the code; this environment cannot run builds or tests. Report findings by severity and set the verdict: request_changes for anything that must be fixed before merging, approve otherwise.`;
 
 const runReview = async (params: ReviewParams): Promise<void> => {
   const {
@@ -80,7 +78,17 @@ const runReview = async (params: ReviewParams): Promise<void> => {
     }
 
     const body = buildReviewBody(context);
-    const decision: ReviewDecision = context.requestChanges
+
+    // A review with no text means the agent reported nothing, which is not a
+    // reason to approve.
+    if (body.length === 0) {
+      console.log(
+        `[review] skipped review for ${repoFullName}#${prNumber}: the agent produced no findings`
+      );
+      return;
+    }
+
+    const decision: ReviewDecision = context.verdict === "request_changes"
       ? "request_changes"
       : env.AUTO_APPROVE
         ? "approve"
@@ -98,10 +106,21 @@ const runReview = async (params: ReviewParams): Promise<void> => {
       `[review] ${result.submitted ? "submitted" : "skipped"} review for ${repoFullName}#${prNumber}: ${result.reason}`
     );
 
-    // The review is the only output channel, so findings that could not be
-    // submitted as one are posted as a comment instead of being dropped.
-    if (!(result.submitted || body.length === 0)) {
-      await addPRComment(threadId, body);
+    // The review is the only output channel, so a review that could not be
+    // submitted as a verdict is still published as a review body rather than a
+    // separate comment.
+    if (!result.submitted && decision !== "comment") {
+      const retry = await submitReview(
+        repoFullName,
+        prNumber,
+        "comment",
+        body,
+        runStartedAt
+      );
+
+      console.log(
+        `[review] ${retry.submitted ? "submitted" : "dropped"} the findings for ${repoFullName}#${prNumber}: ${retry.reason}`
+      );
     }
   } catch (error) {
     try {
