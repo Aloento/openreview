@@ -22,7 +22,7 @@ interface PullRequestEventPayload {
   pull_request: {
     base: { ref: string };
     draft?: boolean;
-    head: { ref: string; repo?: { full_name: string } | null };
+    head: { ref: string; repo?: { full_name: string } | null; sha: string };
     number: number;
     user?: { login: string } | null;
   };
@@ -99,6 +99,7 @@ const handleMention = async (thread: Thread, message: Message) => {
 
   await enqueueReview({
     baseBranch: pr.base.ref,
+    headSha: pr.head.sha,
     messages,
     prBranch: pr.head.ref,
     prNumber,
@@ -200,6 +201,7 @@ export const handlePullRequestEvent = async (
 
   await enqueueReview({
     baseBranch: pull.base.ref,
+    headSha: pull.head.sha,
     messages: [{ content: AUTO_REVIEW_INSTRUCTION, role: "user" }],
     prBranch: pull.head.ref,
     prNumber: pull.number,

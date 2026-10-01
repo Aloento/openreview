@@ -18,6 +18,7 @@ export interface ThreadMessage {
 
 export interface ReviewParams {
   baseBranch: string;
+  headSha: string;
   messages: ThreadMessage[];
   prBranch: string;
   prNumber: number;
@@ -108,8 +109,8 @@ const runReview = async (params: ReviewParams): Promise<void> => {
 
     // The review is the only output channel, so a review that could not be
     // submitted as a verdict is still published as a review body rather than a
-    // separate comment.
-    if (!result.submitted && decision !== "comment") {
+    // separate comment — unless it is already on the pull request.
+    if (!(result.submitted || result.duplicate || decision === "comment")) {
       const retry = await submitReview(
         repoFullName,
         prNumber,
@@ -150,15 +151,31 @@ ${parseError(error)}
 
 let queue: Promise<void> = Promise.resolve();
 let queued = 0;
+const scheduled = new Map<string, string>();
 
 /**
- * Reviews are serialised: one workspace and one agent run at a time keeps the
+ * Reviews are serialised: one checkout and one agent run at a time keeps the
  * host within its CPU, memory and API rate limits.
+ *
+ * The same revision is only reviewed once: a comment that mentions the bot also
+ * raises a `pull_request` event, and a review that is already queued for that
+ * commit wins. A different commit still gets its own review.
  */
 export const enqueueReview = (params: ReviewParams): Promise<void> => {
+  const key = `${params.repoFullName}#${params.prNumber}`;
+
+  if (scheduled.get(key) === params.headSha) {
+    console.log(
+      `[review] dropping the ${params.trigger} trigger for ${key} @ ${params.headSha.slice(0, 7)}: that revision is already queued`
+    );
+
+    return Promise.resolve();
+  }
+
+  scheduled.set(key, params.headSha);
   queued += 1;
   console.log(
-    `[review] queued ${params.repoFullName}#${params.prNumber} (${params.trigger}), ${queued} pending`
+    `[review] queued ${key} @ ${params.headSha.slice(0, 7)} (${params.trigger}), ${queued} pending`
   );
 
   const run = queue.then(async () => {
@@ -168,12 +185,14 @@ export const enqueueReview = (params: ReviewParams): Promise<void> => {
     try {
       await runReview(params);
       console.log(
-        `[review] finished ${params.repoFullName}#${params.prNumber} in ${Math.round((Date.now() - startedAt) / 1000)}s`
+        `[review] finished ${key} in ${Math.round((Date.now() - startedAt) / 1000)}s`
       );
     } catch (error) {
-      console.error(
-        `[review] failed ${params.repoFullName}#${params.prNumber}: ${parseError(error)}`
-      );
+      console.error(`[review] failed ${key}: ${parseError(error)}`);
+    } finally {
+      if (scheduled.get(key) === params.headSha) {
+        scheduled.delete(key);
+      }
     }
   });
 

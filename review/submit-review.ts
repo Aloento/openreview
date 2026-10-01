@@ -5,16 +5,28 @@ import { getAppInfo, getInstallationOctokit } from "@/lib/github";
 export type ReviewDecision = "approve" | "comment" | "request_changes";
 
 export interface SubmitResult {
+  duplicate?: boolean;
   reason: string;
   submitted: boolean;
 }
 
-const REVIEW_EVENT: Record<ReviewDecision, "APPROVE" | "COMMENT" | "REQUEST_CHANGES"> =
-  {
-    approve: "APPROVE",
-    comment: "COMMENT",
-    request_changes: "REQUEST_CHANGES",
-  };
+const REVIEW_EVENT: Record<
+  ReviewDecision,
+  "APPROVE" | "COMMENT" | "REQUEST_CHANGES"
+> = {
+  approve: "APPROVE",
+  comment: "COMMENT",
+  request_changes: "REQUEST_CHANGES",
+};
+
+const REVIEW_STATE: Record<
+  ReviewDecision,
+  "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED"
+> = {
+  approve: "APPROVED",
+  comment: "COMMENTED",
+  request_changes: "CHANGES_REQUESTED",
+};
 
 const botReviews = async (
   octokit: Octokit,
@@ -87,7 +99,22 @@ export const submitReview = async (
     };
   }
 
-  if (decision === "approve" && previous.at(-1)?.state === "APPROVED") {
+  const latest = previous.at(-1);
+
+  // Two triggers for the same pull request can produce the same review; posting
+  // it twice would only add noise.
+  if (
+    latest?.state === REVIEW_STATE[decision] &&
+    (latest.body ?? "").trim() === body.trim()
+  ) {
+    return {
+      duplicate: true,
+      reason: "An identical review is already on the pull request",
+      submitted: false,
+    };
+  }
+
+  if (decision === "approve" && latest?.state === "APPROVED") {
     return { reason: "Already approved", submitted: false };
   }
 

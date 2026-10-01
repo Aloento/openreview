@@ -57,6 +57,9 @@ Approval rules:
   comment so nothing is lost.
 - A review with no text at all is never submitted: an agent that reported nothing is not a
   reason to approve.
+- The same revision is reviewed once. Triggers raised together for one pull request (a
+  mention also raises a `pull_request` event) collapse, and an identical review is never
+  posted twice; a new commit still gets its own review.
 - A pull request that is already approved is not approved twice. A change request made
   during the same run is never followed by an approval, while a change request from an
   earlier run does not block the next review from approving.
