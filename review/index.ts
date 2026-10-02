@@ -105,10 +105,15 @@ const runReview = async (params: ReviewParams): Promise<void> => {
       return;
     }
 
+    // A recovered review (the model answered with text instead of the
+    // submitReview call) has no verdict, so its intent is unknown: publish it
+    // as a comment rather than auto-approving.
     const decision: ReviewDecision = context.verdict === "request_changes"
       ? "request_changes"
-      : env.AUTO_APPROVE
-        ? "approve"
+      : context.verdict === "approve"
+        ? env.AUTO_APPROVE
+          ? "approve"
+          : "comment"
         : "comment";
 
     const result = await submitReview(

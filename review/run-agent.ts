@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 
+import { ToolChoiceViolationError } from "ai";
 import type { ModelMessage } from "ai";
 
 import { createAgent } from "@/lib/agent";
@@ -15,6 +16,26 @@ export interface AgentResult {
   errorMessage?: string;
   success: boolean;
 }
+
+/**
+ * The gateway does not always honour `tool_choice: required`: it can answer
+ * with plain text instead of the submitReview call, which the SDK surfaces as
+ * a ToolChoiceViolationError. The error carries the model's content, so the
+ * review text can still be recovered and published instead of failing the run.
+ */
+const recoverReviewText = (error: unknown): string | undefined => {
+  if (!ToolChoiceViolationError.isInstance(error)) {
+    return undefined;
+  }
+
+  const text = error.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+
+  return text.length > 0 ? text : undefined;
+};
 
 export const runAgent = async (
   workspace: Workspace,
@@ -75,6 +96,17 @@ export const runAgent = async (
 
     return { success: true };
   } catch (error) {
+    const recovered = recoverReviewText(error);
+
+    if (recovered !== undefined) {
+      // The model answered with text instead of the submitReview call. Publish
+      // it as the review body; without a verdict the pipeline treats it as a
+      // comment rather than an approval.
+      context.body = recovered;
+      console.log("[agent] recovered review text from a tool-choice violation");
+      return { success: true };
+    }
+
     return {
       errorMessage: parseError(error),
       success: false,
